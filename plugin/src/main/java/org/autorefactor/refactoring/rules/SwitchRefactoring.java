@@ -34,12 +34,17 @@ import java.util.Set;
 
 import org.autorefactor.refactoring.ASTBuilder;
 import org.autorefactor.refactoring.ASTHelper;
+import org.autorefactor.refactoring.FinderVisitor;
 import org.autorefactor.util.NotImplementedException;
 import org.eclipse.jdt.core.dom.ASTVisitor;
+import org.eclipse.jdt.core.dom.Block;
 import org.eclipse.jdt.core.dom.BreakStatement;
 import org.eclipse.jdt.core.dom.CharacterLiteral;
 import org.eclipse.jdt.core.dom.ContinueStatement;
+import org.eclipse.jdt.core.dom.DoStatement;
+import org.eclipse.jdt.core.dom.EnhancedForStatement;
 import org.eclipse.jdt.core.dom.Expression;
+import org.eclipse.jdt.core.dom.ForStatement;
 import org.eclipse.jdt.core.dom.IfStatement;
 import org.eclipse.jdt.core.dom.InfixExpression;
 import org.eclipse.jdt.core.dom.InfixExpression.Operator;
@@ -50,6 +55,7 @@ import org.eclipse.jdt.core.dom.Statement;
 import org.eclipse.jdt.core.dom.SwitchStatement;
 import org.eclipse.jdt.core.dom.ThrowStatement;
 import org.eclipse.jdt.core.dom.VariableDeclarationFragment;
+import org.eclipse.jdt.core.dom.WhileStatement;
 
 import static org.autorefactor.refactoring.ASTHelper.*;
 import static org.eclipse.jdt.core.dom.InfixExpression.Operator.*;
@@ -110,15 +116,66 @@ public class SwitchRefactoring extends AbstractRefactoringRule {
 
     private static final class VariableDeclarationIdentifierVisitor extends ASTVisitor {
         private Set<String> variableNames = new HashSet<String>();
+        private Statement startNode;
 
         public Set<String> getVariableNames() {
             return variableNames;
+        }
+
+        public VariableDeclarationIdentifierVisitor(Statement node) {
+            startNode = node;
         }
 
         @Override
         public boolean visit(VariableDeclarationFragment node) {
             variableNames.add(node.getName().getIdentifier());
             return VISIT_SUBTREE;
+        }
+
+        @Override
+        public boolean visit(Block node) {
+            return startNode == node ? VISIT_SUBTREE : DO_NOT_VISIT_SUBTREE;
+        }
+    }
+
+    private static final class HasUnlabeledBreakVisitor extends FinderVisitor<Boolean> {
+        @Override
+        public boolean visit(BreakStatement node) {
+            if (node.getLabel() == null) {
+                setResult(true);
+                return DO_NOT_VISIT_SUBTREE;
+            }
+            return VISIT_SUBTREE;
+        }
+
+        @Override
+        public boolean visit(DoStatement node) {
+            return ignoreUnlabledBreaksInInnerBreakableStatement();
+        }
+
+        @Override
+        public boolean visit(EnhancedForStatement node) {
+            return ignoreUnlabledBreaksInInnerBreakableStatement();
+        }
+
+        @Override
+        public boolean visit(ForStatement node) {
+            return ignoreUnlabledBreaksInInnerBreakableStatement();
+        }
+
+        @Override
+        public boolean visit(SwitchStatement node) {
+            return ignoreUnlabledBreaksInInnerBreakableStatement();
+        }
+
+        @Override
+        public boolean visit(WhileStatement node) {
+            return ignoreUnlabledBreaksInInnerBreakableStatement();
+        }
+
+        private boolean ignoreUnlabledBreaksInInnerBreakableStatement() {
+            // unlabeled breaks in inner loops/switchs work ok with switch refactoring rule
+            return DO_NOT_VISIT_SUBTREE;
         }
     }
 
@@ -136,6 +193,10 @@ public class SwitchRefactoring extends AbstractRefactoringRule {
 
     @Override
     public boolean visit(final IfStatement node) {
+        if (hasUnlabeledBreak(node)) {
+            return VISIT_SUBTREE;
+        }
+
         Variable variable = extractVariableAndValues(node);
         if (variable == null) {
             return VISIT_SUBTREE;
@@ -168,12 +229,16 @@ public class SwitchRefactoring extends AbstractRefactoringRule {
         return maybeReplaceWithSwitchStmt(node, switchExpr, filteredCases, remainingStmt);
     }
 
+    private boolean hasUnlabeledBreak(final IfStatement node) {
+        return new HasUnlabeledBreakVisitor().findOrDefault(node, false);
+    }
+
     private boolean havaSameIdentifier(final SimpleName sn1, SimpleName sn2) {
         return sn1.getIdentifier().equals(sn2.getIdentifier());
     }
 
     private boolean detectDeclarationConflicts(final Statement stmt, final Set<String> variableDeclarationIds) {
-        final VariableDeclarationIdentifierVisitor visitor = new VariableDeclarationIdentifierVisitor();
+        final VariableDeclarationIdentifierVisitor visitor = new VariableDeclarationIdentifierVisitor(stmt);
         stmt.accept(visitor);
 
         final Set<String> varNames = visitor.getVariableNames();
